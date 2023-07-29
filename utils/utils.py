@@ -10,12 +10,16 @@ import pandas as pd
 from functools import partial
 from tqdm import tqdm
 
-def plot_img_and_mask(img, mask):
-    fig, ax = plt.subplots(1, 2)
+def plot_img_and_mask(img, mask, true_mask=None):
+    fig, ax = plt.subplots(1, 2 if true_mask is None else 3)
     ax[0].set_title('Input image')
     ax[0].imshow(img)
     ax[1].set_title(f'Mask')
     ax[1].imshow(mask)
+    if true_mask is not None:
+        ax[2].set_title(f'True Mask')
+        ax[2].imshow(true_mask)
+        
     plt.xticks([]), plt.yticks([])
     plt.show()
 

@@ -28,6 +28,7 @@ dir_checkpoint = Path('./checkpoints/')
 def train_model(
         model,
         device,
+        architecture: str = "U-Net",
         epochs: int = 5,
         batch_size: int = 1,
         learning_rate: float = 1e-5,
@@ -39,8 +40,9 @@ def train_model(
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
         ignore: float = 0.0,
-        early_stopping: bool = True,
-        early_stopping_patience: int = 5,
+        es: bool = True,
+        es_patience: int = 5,
+        IoUThreshold=0.6,
 ):
     # 1. Create dataset
     dataset = HubmapDataset(dir_img, dir_mask, img_scale)
@@ -61,8 +63,9 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='U-Net', resume='allow', anonymous='must')
+    experiment = wandb.init(project='HuBMAP', resume='allow', anonymous='must')
     experiment.config.update(dict(
+        architecture=architecture,
         epochs=epochs, 
         batch_size=batch_size, 
         learning_rate=learning_rate,
@@ -70,11 +73,13 @@ def train_model(
         save_checkpoint=save_checkpoint, 
         img_scale=img_scale, 
         amp=amp,
-        early_stopping=early_stopping,
-        early_stopping_patience=early_stopping_patience,
+        es=es,
+        es_patience=es_patience,
+        IoUThreshold=IoUThreshold
     ))
 
     logging.info(f'''Starting training:
+        Architecture:    {architecture}
         Epochs:          {epochs}
         Batch size:      {batch_size}
         Learning rate:   {learning_rate}
@@ -83,20 +88,21 @@ def train_model(
         Checkpoints:     {save_checkpoint}
         Device:          {device.type}
         Images scaling:  {img_scale}
+        IoU Threshold:   {IoUThreshold}
         Mixed Precision: {amp}
     ''')
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.8, patience=5, min_lr=1e-5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', factor=0.8, patience=5, min_lr=1e-5)
     criterion = nn.BCEWithLogitsLoss().to(device)
 
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     # 5. Begin training
     global_step = 0
-    best_val_score = None
-    early_stopping_counter = 0
+    best_iou = None
+    es_counter = 0
     for epoch in range(1, epochs + 1):
         epoch_loss = 0
         
@@ -140,19 +146,24 @@ def train_model(
                 pbar.update(x.shape[0])
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
-        val_score = evaluate(model, criterion, val_loader, device, amp)
-        scheduler.step(val_score)
+        model.eval()
+        eval = evaluate(model, val_loader, device, amp, IoUThreshold=IoUThreshold)
+        model.train()
+
+        scheduler.step(eval["IoU"])
 
         # early stopping
-        if best_val_score is None or val_score < best_val_score:
+        if best_iou is None or eval["IoU"] > best_iou:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), f'{dir_checkpoint}/model{wandb.run.name}_epoch{epoch}.pth')
             logging.info(f'Checkpoint {epoch} saved!')
-            early_stopping_counter = 0
+
+            es_counter = 0
+            best_iou = eval["IoU"]
         else:
-            early_stopping_counter += 1
-            if early_stopping and early_stopping_counter > early_stopping_patience:
-                logging.info(f"Stopping run early because there were {early_stopping_counter} unsuccessful runs")
+            es_counter += 1
+            if es and es_counter > es_patience:
+                logging.info(f"Stopping run early because there were {es_counter} unsuccessful runs")
                 break
 
         histograms = {}
@@ -163,10 +174,12 @@ def train_model(
             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-        logging.info(f'Validation score: {val_score}')
+        logging.info(f'mAP: {eval["mAP"]}\nBCE: {eval["BCE"]}\nIoU: {eval["IoU"]}')
         experiment.log({
             'learning rate': optimizer.param_groups[0]['lr'],
-            'validation score': val_score,
+            'mAP':eval['mAP'],
+            'BCE':eval['BCE'],
+            'IoU':eval['IoU'],
             'step': global_step,
             'epoch': epoch,
             **histograms
