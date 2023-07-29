@@ -30,15 +30,17 @@ def train_model(
         device,
         epochs: int = 5,
         batch_size: int = 1,
-        learning_rate: float = 1e-4,
+        learning_rate: float = 1e-5,
         val_percent: float = 0.1,
         save_checkpoint: bool = True,
         img_scale: float = 0.5,
         amp: bool = False,
         weight_decay: float = 1e-8,
-        momentum: float = 0.99,
+        momentum: float = 0.999,
         gradient_clipping: float = 1.0,
         ignore: float = 0.0,
+        early_stopping: bool = True,
+        early_stopping_patience: int = 5,
 ):
     # 1. Create dataset
     dataset = HubmapDataset(dir_img, dir_mask, img_scale)
@@ -67,7 +69,9 @@ def train_model(
         val_percent=val_percent, 
         save_checkpoint=save_checkpoint, 
         img_scale=img_scale, 
-        amp=amp
+        amp=amp,
+        early_stopping=early_stopping,
+        early_stopping_patience=early_stopping_patience,
     ))
 
     logging.info(f'''Starting training:
@@ -91,6 +95,8 @@ def train_model(
 
     # 5. Begin training
     global_step = 0
+    best_val_score = None
+    early_stopping_counter = 0
     for epoch in range(1, epochs + 1):
         epoch_loss = 0
         
@@ -137,6 +143,18 @@ def train_model(
         val_score = evaluate(model, criterion, val_loader, device, amp)
         scheduler.step(val_score)
 
+        # early stopping
+        if best_val_score is None or val_score < best_val_score:
+            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+            torch.save(model.state_dict(), f'{dir_checkpoint}/model{wandb.run.name}_epoch{epoch}.pth')
+            logging.info(f'Checkpoint {epoch} saved!')
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+            if early_stopping and early_stopping_counter > early_stopping_patience:
+                logging.info(f"Stopping run early because there were {early_stopping_counter} unsuccessful runs")
+                break
+
         histograms = {}
         for tag, value in model.named_parameters():
             tag = tag.replace('/', '.')
@@ -153,17 +171,13 @@ def train_model(
             'epoch': epoch,
             **histograms
         })
-        if save_checkpoint:
-            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), f'{dir_checkpoint}/checkpoint_epoch{epoch}.pth')
-            logging.info(f'Checkpoint {epoch} saved!')
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
-    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=5, help='Number of epochs')
+    parser.add_argument('--epochs', '-e', metavar='E', type=int, default=20, help='Number of epochs')
     parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=1, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-4, help='Learning rate', dest='lr')
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5, help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0, help='Percent of the data that is used as validation (0-100)')
