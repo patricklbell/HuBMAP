@@ -19,29 +19,26 @@ def evaluate(model, dataloader, device, IoUThreshold=0.6):
         x, y_true = batch['image'], batch['mask']
 
         # move images and labels to correct device and type
-        x = x.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
+        x = x.to(device=device, dtype=torch.float32)
         y_true = y_true.to(device=device, dtype=torch.long)
 
         # predict the mask
         y_pred = model(x)
 
-        y_pred = y_pred.squeeze(1)
-        y_true = y_true.squeeze(1).float()
+        out['BCE'] += criterion(y_pred, y_true.float()).item()
 
-        out['BCE'] += criterion(y_pred, y_true).mean()
+        y_pred = (torch.sigmoid(y_pred) > 0.5).long()
 
-        y_pred = torch.sigmoid(y_pred) > 0.5
-        y_true = y_true > 0
         out['IoU'] += iou_binary(y_pred, y_true) / 100
 
         preds, targets = [], []
         scores = torch.tensor([1]).float()
         labels = torch.tensor([0]).int()
-        for i in range(len(dataloader.dataset) // len(dataloader)):
-            preds.append(dict(masks=y_pred[i].unsqueeze(0), scores=scores, labels=labels))
-            targets.append(dict(masks=y_true[i].unsqueeze(0), labels=labels))
+        for y_pred, y_true in zip(y_pred, y_true):
+            preds.append(dict(masks=y_pred.unsqueeze(0) > 0, scores=scores, labels=labels))
+            targets.append(dict(masks=y_true.unsqueeze(0) > 0, labels=labels))
 
-        out['mAP'] += metric(preds, targets)['map'].mean()
+        out['mAP'] += metric(preds, targets)['map'].item()
 
     out['BCE'] /= max(num_val_batches, 1)
     out['IoU'] /= max(num_val_batches, 1)

@@ -11,24 +11,23 @@ from torchvision import transforms
 from utils.data_loading import BasicDataset
 from unet import UNet
 from utils.utils import plot_img_and_mask
-
 import matplotlib.pyplot as plt
+
+@torch.inference_mode()
 def predict_img(net,
                 full_img,
                 device,
                 scale_factor=1,
                 out_threshold=0.5):
-    net.eval()
-    img = torch.from_numpy(BasicDataset.preprocess(full_img, scale_factor))
-    img = img.unsqueeze(0)
+    img = BasicDataset.preprocess(full_img, scale_factor, is_train = False, is_mask = False)
     img = img.to(device=device, dtype=torch.float32)
 
-    with torch.no_grad():
-        output = net(img).cpu()
-
-        output = F.interpolate(output, (full_img.size[1], full_img.size[0]), mode='bilinear')
-        mask = torch.sigmoid(output)
-    return mask.squeeze().numpy()
+    net.eval()
+    output = net(img)
+    
+    output = F.interpolate(output, (full_img.size[1], full_img.size[0]), mode='bilinear')
+    mask = torch.sigmoid(output)
+    return mask.squeeze().cpu().numpy()
 
 def get_args():
     parser = argparse.ArgumentParser(description='Predict masks from input images')

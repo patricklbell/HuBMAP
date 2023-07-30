@@ -42,9 +42,10 @@ def train_model(
         es: bool = True,
         es_patience: int = 5,
         IoUThreshold=0.6,
+        do_transform: bool = True
 ):
     # 1. Create dataset
-    dataset = HubmapDataset(dir_img, dir_mask, img_scale)
+    dataset = HubmapDataset(dir_img, dir_mask, img_scale, do_transform=do_transform)
 
     # 2. Ignore some data to speed up testing
     if ignore > 0.0:
@@ -73,7 +74,8 @@ def train_model(
         img_scale=img_scale, 
         es=es,
         es_patience=es_patience,
-        IoUThreshold=IoUThreshold
+        IoUThreshold=IoUThreshold,
+        do_transform=do_transform
     ))
 
     logging.info(f'''Starting training:
@@ -102,6 +104,7 @@ def train_model(
         epoch_loss = 0
         
         model.train()
+        dataset.train()
         with tqdm(total=n_train, desc=f'Epoch {epoch}/{epochs}', unit='img') as pbar:
             for batch in train_loader:
                 x, y_true = batch['image'], batch['mask']
@@ -112,12 +115,10 @@ def train_model(
                     the images are loaded correctly.
                 '''
 
-                x = x.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
-                y_true = y_true.to(device=device, dtype=torch.long)
+                x = x.to(device=device, dtype=torch.float32)
+                y_true = y_true.to(device=device, dtype=torch.float32)
                 
                 y_pred = model(x)
-                y_pred = y_pred.squeeze(1)
-                y_true = y_true.squeeze(1).float()
 
                 loss = criterion(y_pred, y_true)
                 # loss += lovasz_hinge(y_pred, y_true)
@@ -138,9 +139,9 @@ def train_model(
                 pbar.update(x.shape[0])
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
+        dataset.eval()
         model.eval()
         eval = evaluate(model, val_loader, device, IoUThreshold=IoUThreshold)
-        model.train()
 
         scheduler.step(eval["IoU"])
 

@@ -17,7 +17,7 @@ def plot_img_and_mask(img, mask, true_mask=None):
     ax[0].set_title('Input image')
     ax[0].imshow(img)
     ax[1].set_title(f'Mask')
-    ax[1].imshow(mask, vmin=0, vmax=1)
+    ax[1].imshow(mask)
     if true_mask is not None:
         true_mask = np.asarray(true_mask).transpose((1,0))
         ax[2].set_title(f'True Mask')
