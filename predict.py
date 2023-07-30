@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from PIL import Image, ImageOps
 from torchvision import transforms
 
-from utils.data_loading import BasicDataset
+from utils.data_loading import BasicDataset, load_image
 from unet import UNet
 from utils.utils import plot_img_and_mask
 import matplotlib.pyplot as plt
@@ -18,14 +18,15 @@ def predict_img(net,
                 full_img,
                 device,
                 scale_factor=1,
-                out_threshold=0.5):
-    img = BasicDataset.preprocess(full_img, scale_factor, is_train = False, is_mask = False)
-    img = img.to(device=device, dtype=torch.float32)
+                out_threshold=0.5,
+                transform=True):
+    img = BasicDataset.prepare(full_img, scale_factor, transform)
+    img = img.to(device=device, dtype=torch.float32).unsqueeze(0)
 
     net.eval()
     output = net(img)
     
-    output = F.interpolate(output, (full_img.size[1], full_img.size[0]), mode='bilinear')
+    output = F.interpolate(output, (full_img.shape[1], full_img.shape[0]), mode='bilinear')
     mask = torch.sigmoid(output)
     return mask.squeeze().cpu().numpy()
 
@@ -43,6 +44,7 @@ def get_args():
     parser.add_argument('--scale', '-s', type=float, default=0.5,
                         help='Scale factor for the input images')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
+    parser.add_argument('--transform', action='store_false', default=True, help="Don't apply transforms to input")
     
     return parser.parse_args()
 
@@ -84,13 +86,14 @@ if __name__ == '__main__':
 
     for i, filename in enumerate(in_files):
         logging.info(f'Predicting image {filename} ...')
-        img = Image.open(filename)
+        img = load_image(filename, False)
 
         mask = predict_img(net=net,
                            full_img=img,
                            scale_factor=args.scale,
                            out_threshold=args.mask_threshold,
-                           device=device)
+                           device=device,
+                           transform=args.transform)
 
         if not args.no_save:
             out_filename = out_files[i]

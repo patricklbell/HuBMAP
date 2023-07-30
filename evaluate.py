@@ -20,14 +20,15 @@ def evaluate(model, dataloader, device, IoUThreshold=0.6):
 
         # move images and labels to correct device and type
         x = x.to(device=device, dtype=torch.float32)
-        y_true = y_true.to(device=device, dtype=torch.long)
+        y_true = y_true.to(device=device, dtype=torch.float32)
 
         # predict the mask
         y_pred = model(x)
 
-        out['BCE'] += criterion(y_pred, y_true.float()).item()
+        out['BCE'] += criterion(y_pred, y_true).item()
 
-        y_pred = (torch.sigmoid(y_pred) > 0.5).long()
+        y_pred = torch.sigmoid(y_pred) > 0.5
+        y_true = y_true > 0
 
         out['IoU'] += iou_binary(y_pred, y_true) / 100
 
@@ -35,8 +36,8 @@ def evaluate(model, dataloader, device, IoUThreshold=0.6):
         scores = torch.tensor([1]).float()
         labels = torch.tensor([0]).int()
         for y_pred, y_true in zip(y_pred, y_true):
-            preds.append(dict(masks=y_pred.unsqueeze(0) > 0, scores=scores, labels=labels))
-            targets.append(dict(masks=y_true.unsqueeze(0) > 0, labels=labels))
+            preds.append(dict(masks=y_pred, scores=scores, labels=labels))
+            targets.append(dict(masks=y_true, labels=labels))
 
         out['mAP'] += metric(preds, targets)['map'].item()
 

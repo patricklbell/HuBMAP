@@ -20,20 +20,25 @@ from albumentations import (Compose, HorizontalFlip, VerticalFlip, Rotate, Rando
                             GaussianBlur,CLAHE,
                             Cutout, CoarseDropout, GaussNoise, ChannelShuffle, ToGray, OpticalDistortion,
                             Normalize, OneOf, NoOp, Resize)
+from albumentations.augmentations import ToFloat
 from albumentations.pytorch import ToTensorV2
+import cv2
 
 
-def load_image(filename):
-    ext = splitext(filename)[1]
-    if ext == '.npy':
-        return Image.fromarray(np.load(filename))
-    elif ext in ['.pt', '.pth']:
-        return Image.fromarray(torch.load(filename).numpy())
-    else:
-        return Image.open(filename)
+def load_image(filename, mask):
+    img = cv2.imread(str(filename))
+    if mask:
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        mask = np.zeros_like(img)
+        mask[img > 0] = 1
+        return mask
+    
+    if img.shape[2] == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    return img
     
 def mean_and_std(filename):
-    img = np.asarray(load_image(filename))
+    img = load_image(filename, False)
     if img.ndim == 2:
         img = img[np.newaxis, ...]
     else:
@@ -127,49 +132,44 @@ class BasicDataset(Dataset):
         return len(self.ids)
 
     def preprocess(self, image, mask, scale: float):
-        w, h = image.size
-        newW, newH = int(scale * w), int(scale * h)
-        assert newW > 0 and newH > 0, 'Scale is too small, resized images would have no pixel'
-
-        assert image.size == mask.size, f'Image and mask should be the same size, but are {image.size} and {mask.size}'
-        image = image.resize((newW, newH), resample=Image.BICUBIC)
-        mask  =  mask.resize((newW, newH), resample=Image.NEAREST)
-        image, mask = np.asarray(image), np.asarray(mask)
+        w,h = int(scale * image.shape[1]), int(scale * image.shape[0])
+        assert w > 0 and h > 0, 'Scale is too small, resized images would have no pixel'
+        image = cv2.resize(image, (w,h), interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(mask, (w,h), interpolation=cv2.INTER_AREA)
 
         if not self.do_transform:
-            return NO_TRANSFORM(image=image/255, mask=mask/255)
+            return NO_TRANSFORM(image=image, mask=mask)
 
         transform = TRAIN_TRANSFORM if self.training else EVAL_TRANSFORM
         return transform(image=image, mask=mask)
     
     @staticmethod
     def prepare(image, scale: float, do_transform: bool = True):
-        w, h = image.size
-        newW, newH = int(scale * w), int(scale * h)
+        w,h = int(scale * image.shape[1]), int(scale * image.shape[0])
+        assert w > 0 and h > 0, 'Scale is too small, resized images would have no pixel'
+        image = cv2.resize(image, (w,h), interpolation=cv2.INTER_AREA)
         
-        image = image.resize((newW, newH), resample=Image.BICUBIC)
-        image = np.asarray(image)
-
         if not do_transform:
-            return NO_TRANSFORM(image=image / 255)['image']
-        
-        return EVAL_TRANSFORM(image=image)['image']
+            return NO_TRANSFORM(image=image)['image'].clone().detach()
+        return EVAL_TRANSFORM(image=image)['image'].clone().detach()
 
     def __getitem__(self, idx):
         id = self.ids[idx]
         mask_file = list(self.mask_dir.glob(id + '.*'))
-        img_file = list(self.images_dir.glob(id + '.*'))
+        image_file = list(self.images_dir.glob(id + '.*'))
 
-        assert len(img_file) == 1, f'Either no image or multiple images found for the ID {id}: {img_file}'
-        assert len(mask_file) == 1, f'Either no image or multiple images found for the ID {id}: {img_file}'
-        img = load_image(img_file[0])
-        mask = load_image(mask_file[0])
+        assert len(image_file) == 1, f'Either no image or multiple images found for the ID {id}: {image_file}'
+        assert len(mask_file) == 1, f'Either no image or multiple images found for the ID {id}: {mask_file}'
+        image = load_image(image_file[0].absolute(), False)
+        mask = load_image(mask_file[0].absolute(), True)
 
-        out = self.preprocess(img, mask, self.scale)
+        assert image.shape[:2] == mask.shape[:2], f'Image and mask should be the same size, but are {image.shape[:2]} and {mask.shape[:2]}'
+
+        out = self.preprocess(image, mask, self.scale)
 
         return {
-            'image': out['image'].float(),
-            'mask': out['mask'].long(),
+            'image': out['image'].clone().detach(),
+            'mask': out['mask'].clone().detach().unsqueeze(0),
         }
 
 

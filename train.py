@@ -21,6 +21,8 @@ from unet import UNet
 from utils.data_loading import HubmapDataset
 from utils.lovasz_loss import lovasz_hinge
 
+import matplotlib.pyplot as plt
+
 dir_img = Path('./data/train/')
 dir_mask = Path('./data/train_masks/')
 dir_checkpoint = Path('./checkpoints/')
@@ -123,7 +125,7 @@ def train_model(
                 loss = criterion(y_pred, y_true)
                 # loss += lovasz_hinge(y_pred, y_true)
                 
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad()
                 loss.backward()
                 clip_grad_norm_(model.parameters(), gradient_clipping)
                 optimizer.step()
