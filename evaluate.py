@@ -1,17 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchmetrics.detection import MeanAveragePrecision
 from tqdm import tqdm
-from utils.lovasz_loss import iou_binary
+
+from torchmetrics.detection import MeanAveragePrecision
+from utils.metrics import DiceLoss, DiceBCELoss, IoULoss, LovaszHingeLoss
 
 @torch.inference_mode()
 def evaluate(model, dataloader, device, IoUThreshold=0.6):
     num_val_batches = len(dataloader)
 
     # @note Dice threshold of 0.6 given in HuBMAP evaluation section
-    metric = MeanAveragePrecision(iou_type="segm", iou_thresholds=[IoUThreshold], compute_with_cache=False).to(device)
-    criterion = nn.BCEWithLogitsLoss().to(device)
+    mAP_metric = MeanAveragePrecision(iou_type="segm", iou_thresholds=[IoUThreshold], compute_with_cache=False).to(device)
+    bce_metric = nn.BCEWithLogitsLoss().to(device)
+    IoU_metric = IoULoss().to(device)
 
     # iterate over the validation set and average the metric
     out = dict(mAP=0, BCE=0, IoU=0)
@@ -25,12 +27,11 @@ def evaluate(model, dataloader, device, IoUThreshold=0.6):
         # predict the mask
         y_pred = model(x)
 
-        out['BCE'] += criterion(y_pred, y_true).item()
+        out['BCE'] += bce_metric(y_pred, y_true).item()
+        out['IoU'] += 1 - IoU_metric(y_pred, y_true).item()
 
         y_pred = torch.sigmoid(y_pred) > 0.5
         y_true = y_true > 0
-
-        out['IoU'] += iou_binary(y_pred, y_true) / 100
 
         preds, targets = [], []
         scores = torch.tensor([1]).float()
@@ -39,7 +40,7 @@ def evaluate(model, dataloader, device, IoUThreshold=0.6):
             preds.append(dict(masks=y_pred, scores=scores, labels=labels))
             targets.append(dict(masks=y_true, labels=labels))
 
-        out['mAP'] += metric(preds, targets)['map'].item()
+        out['mAP'] += mAP_metric(preds, targets)['map'].item()
 
     out['BCE'] /= max(num_val_batches, 1)
     out['IoU'] /= max(num_val_batches, 1)

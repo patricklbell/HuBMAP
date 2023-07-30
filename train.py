@@ -19,7 +19,7 @@ import wandb
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import HubmapDataset
-from utils.lovasz_loss import lovasz_hinge
+from utils.metrics import DiceLoss, DiceBCELoss, IoULoss, LovaszHingeLoss
 
 import matplotlib.pyplot as plt
 
@@ -77,7 +77,8 @@ def train_model(
         es=es,
         es_patience=es_patience,
         IoUThreshold=IoUThreshold,
-        do_transform=do_transform
+        do_transform=do_transform,
+        loss='IoULoss',
     ))
 
     logging.info(f'''Starting training:
@@ -96,7 +97,7 @@ def train_model(
     # 4. Set up the optimizer, the loss, the learning rate scheduler
     optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', factor=0.8, patience=5, min_lr=1e-5)
-    criterion = nn.BCEWithLogitsLoss().to(device)
+    criterion = IoULoss().to(device)
 
     # 5. Begin training
     global_step = 0
@@ -123,7 +124,6 @@ def train_model(
                 y_pred = model(x)
 
                 loss = criterion(y_pred, y_true)
-                # loss += lovasz_hinge(y_pred, y_true)
                 
                 optimizer.zero_grad()
                 loss.backward()
@@ -145,20 +145,20 @@ def train_model(
         model.eval()
         eval = evaluate(model, val_loader, device, IoUThreshold=IoUThreshold)
 
-        scheduler.step(eval["IoU"])
+        scheduler.step(eval['IoU'])
 
         # early stopping
-        if best_iou is None or eval["IoU"] > best_iou or epoch == epochs:
+        if best_iou is None or eval['IoU'] > best_iou or epoch == epochs:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), f'{dir_checkpoint}/model{wandb.run.name}_epoch{epoch}.pth')
             logging.info(f'Checkpoint {epoch} saved!')
 
             es_counter = 0
-            best_iou = eval["IoU"]
+            best_iou = eval['IoU']
         else:
             es_counter += 1
             if es and es_counter > es_patience:
-                logging.info(f"Stopping run early because there were {es_counter} unsuccessful runs")
+                logging.info(f'Stopping run early because there were {es_counter} unsuccessful runs')
                 break
 
         histograms = {}

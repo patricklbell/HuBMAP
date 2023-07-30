@@ -30,48 +30,6 @@ def lovasz_grad(gt_sorted):
     return jaccard
 
 
-def iou_binary(preds, labels, EMPTY=1., ignore=None, per_image=True):
-    """
-    IoU for foreground class
-    binary: 1 foreground, 0 background
-    """
-    if not per_image:
-        preds, labels = (preds,), (labels,)
-    ious = []
-    for pred, label in zip(preds, labels):
-        intersection = ((label == 1) & (pred == 1)).sum()
-        union = ((label == 1) | ((pred == 1) & (label != ignore))).sum()
-        if not union:
-            iou = EMPTY
-        else:
-            iou = float(intersection) / union
-        ious.append(iou)
-    iou = mean(ious)    # mean accross images if per_image
-    return 100 * iou
-
-
-def iou(preds, labels, C, EMPTY=1., ignore=None, per_image=False):
-    """
-    Array of IoU for each (non ignored) class
-    """
-    if not per_image:
-        preds, labels = (preds,), (labels,)
-    ious = []
-    for pred, label in zip(preds, labels):
-        iou = []    
-        for i in range(C):
-            if i != ignore: # The ignored label is sometimes among predicted classes (ENet - CityScapes)
-                intersection = ((label == i) & (pred == i)).sum()
-                union = ((label == i) | ((pred == i) & (label != ignore))).sum()
-                if not union:
-                    iou.append(EMPTY)
-                else:
-                    iou.append(float(intersection) / union)
-        ious.append(iou)
-    ious = map(mean, zip(*ious)) # mean accross images if per_image
-    return 100 * np.array(ious)
-
-
 # --------------------------- BINARY LOSSES ---------------------------
 
 
@@ -164,27 +122,6 @@ def flatten_binary_scores(scores, labels, ignore=None):
     return vscores, vlabels
 
 
-class StableBCELoss(torch.nn.modules.Module):
-    def __init__(self):
-         super(StableBCELoss, self).__init__()
-    def forward(self, input, target):
-         neg_abs = - input.abs()
-         loss = input.clamp(min=0) - input * target + (1 + neg_abs.exp()).log()
-         return loss.mean()
-
-
-def binary_xloss(logits, labels, ignore=None):
-    """
-    Binary Cross entropy loss
-      logits: [B, H, W] Variable, logits at each pixel (between -\infty and +\infty)
-      labels: [B, H, W] Tensor, binary ground truth masks (0 or 1)
-      ignore: void class id
-    """
-    logits, labels = flatten_binary_scores(logits, labels, ignore)
-    loss = StableBCELoss()(logits, Variable(labels.float()))
-    return loss
-
-
 # --------------------------- MULTICLASS LOSSES ---------------------------
 
 
@@ -239,12 +176,6 @@ def flatten_probas(probas, labels, ignore=None):
     vprobas = probas[valid.nonzero().squeeze()]
     vlabels = labels[valid]
     return vprobas, vlabels
-
-def xloss(logits, labels, ignore=None):
-    """
-    Cross entropy loss
-    """
-    return F.cross_entropy(logits, Variable(labels), ignore_index=255)
 
 
 # --------------------------- HELPER FUNCTIONS ---------------------------
