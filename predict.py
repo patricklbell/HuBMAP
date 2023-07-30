@@ -85,8 +85,7 @@ if __name__ == '__main__':
 
     for i, filename in enumerate(in_files):
         logging.info(f'Predicting image {filename} ...')
-        img = Image.open(filename).rotate(90)
-        img = ImageOps.flip(img)
+        img = Image.open(filename)
 
         mask = predict_img(net=net,
                            full_img=img,

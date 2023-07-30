@@ -11,12 +11,15 @@ from functools import partial
 from tqdm import tqdm
 
 def plot_img_and_mask(img, mask, true_mask=None):
+    img, mask = np.asarray(img).transpose((1,0,2)), np.asarray(mask).transpose((1,0))
+
     fig, ax = plt.subplots(1, 2 if true_mask is None else 3)
     ax[0].set_title('Input image')
     ax[0].imshow(img)
     ax[1].set_title(f'Mask')
-    ax[1].imshow(mask)
+    ax[1].imshow(mask, vmin=0, vmax=1)
     if true_mask is not None:
+        true_mask = np.asarray(true_mask).transpose((1,0))
         ax[2].set_title(f'True Mask')
         ax[2].imshow(true_mask)
         

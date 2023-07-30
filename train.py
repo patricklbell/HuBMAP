@@ -28,14 +28,13 @@ dir_checkpoint = Path('./checkpoints/')
 def train_model(
         model,
         device,
-        architecture: str = "U-Net",
+        architecture: str,
         epochs: int = 5,
         batch_size: int = 1,
         learning_rate: float = 1e-5,
         val_percent: float = 0.1,
         save_checkpoint: bool = True,
         img_scale: float = 0.5,
-        amp: bool = False,
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
@@ -72,7 +71,6 @@ def train_model(
         val_percent=val_percent, 
         save_checkpoint=save_checkpoint, 
         img_scale=img_scale, 
-        amp=amp,
         es=es,
         es_patience=es_patience,
         IoUThreshold=IoUThreshold
@@ -89,15 +87,12 @@ def train_model(
         Device:          {device.type}
         Images scaling:  {img_scale}
         IoU Threshold:   {IoUThreshold}
-        Mixed Precision: {amp}
     ''')
 
-    # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
+    # 4. Set up the optimizer, the loss, the learning rate scheduler
     optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', factor=0.8, patience=5, min_lr=1e-5)
     criterion = nn.BCEWithLogitsLoss().to(device)
-
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     # 5. Begin training
     global_step = 0
@@ -120,20 +115,17 @@ def train_model(
                 x = x.to(device=device, dtype=torch.float32, memory_format=torch.channels_last)
                 y_true = y_true.to(device=device, dtype=torch.long)
                 
-                optimizer.zero_grad(set_to_none=True)
-                with torch.autocast(device.type if device.type != 'mps' else 'cpu', enabled=amp):
-                    y_pred = model(x)
+                y_pred = model(x)
+                y_pred = y_pred.squeeze(1)
+                y_true = y_true.squeeze(1).float()
 
-                    y_pred = y_pred.squeeze(1)
-                    y_true = y_true.squeeze(1).float()
-
-                    loss = criterion(y_pred, y_true)
-                    loss += lovasz_hinge(y_pred, y_true)
+                loss = criterion(y_pred, y_true)
+                # loss += lovasz_hinge(y_pred, y_true)
                 
-                scaler.scale(loss).backward()
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
                 clip_grad_norm_(model.parameters(), gradient_clipping)
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
 
                 global_step += 1
                 epoch_loss += loss.item()
@@ -147,13 +139,13 @@ def train_model(
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
         model.eval()
-        eval = evaluate(model, val_loader, device, amp, IoUThreshold=IoUThreshold)
+        eval = evaluate(model, val_loader, device, IoUThreshold=IoUThreshold)
         model.train()
 
         scheduler.step(eval["IoU"])
 
         # early stopping
-        if best_iou is None or eval["IoU"] > best_iou:
+        if best_iou is None or eval["IoU"] > best_iou or epoch == epochs:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), f'{dir_checkpoint}/model{wandb.run.name}_epoch{epoch}.pth')
             logging.info(f'Checkpoint {epoch} saved!')
@@ -182,6 +174,7 @@ def train_model(
             'IoU':eval['IoU'],
             'step': global_step,
             'epoch': epoch,
+            'epoch loss': epoch_loss / len(train_loader),
             **histograms
         })
 
@@ -194,7 +187,6 @@ def get_args():
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=0.5, help='Downscaling factor of the images')
     parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0, help='Percent of the data that is used as validation (0-100)')
-    parser.add_argument('--amp', action='store_true', default=False, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
     parser.add_argument('--ignore', '-i', type=float, default=0, help='Proportion of examples to ignore, WARNING should only be used for testing')
 
@@ -230,29 +222,27 @@ if __name__ == '__main__':
     try:
         train_model(
             model=model,
+            architecture="UNet",
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
             device=device,
             img_scale=args.scale,
             val_percent=args.val / 100,
-            amp=args.amp,
             ignore=args.ignore
         )
     except torch.cuda.OutOfMemoryError:
-        logging.error('Detected OutOfMemoryError! '
-                      'Enabling checkpointing to reduce memory usage, but this slows down training. '
-                      'Consider enabling AMP (--amp) for fast and memory efficient training')
+        logging.error('Detected OutOfMemoryError!\n Enabling checkpointing to reduce memory usage, but this slows down training.')
         torch.cuda.empty_cache()
         model.use_checkpointing()
         train_model(
             model=model,
+            architecture="UNet",
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.lr,
             device=device,
             img_scale=args.scale,
             val_percent=args.val / 100,
-            amp=args.amp,
             ignore=args.ignore
         )
