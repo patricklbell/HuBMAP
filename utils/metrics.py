@@ -22,6 +22,48 @@ class DiceLoss(nn.Module):
         
         return 1 - dice
 
+# https://arxiv.org/pdf/1602.06541.pdf
+# Mean Pixel Accuracy for Binary Classification
+class PixelAccuracy(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(PixelAccuracy, self).__init__()
+
+    def forward(self, inputs, targets):
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = F.sigmoid(inputs)       
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        intersection = (inputs * targets).sum()
+        total = targets.sum()
+        
+        return intersection / total
+
+# https://arxiv.org/pdf/1602.06541.pdf
+# F-Metric
+FScore_BETA = 1.
+class FScore(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(FScore, self).__init__()
+
+    def forward(self, inputs, targets, beta=FScore_BETA):
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = (F.sigmoid(inputs) > 0.5).int()
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+
+        tp = (inputs * targets).sum()
+        fp = (inputs * (1-targets)).sum()
+        fn = ((1-inputs) * targets).sum()
+        
+        return (1+beta)**2 * (tp / (tp*(1+beta)**2 + fn*beta**2 + fp)) 
+
 class DiceBCELoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
         super(DiceBCELoss, self).__init__()
@@ -140,15 +182,17 @@ class FocalTverskyLoss(nn.Module):
                        
         return FocalTversky
 
-from utils.lovasz import lovasz_hinge
+from utils.lovasz import lovasz_hinge2
 
 class LovaszHingeLoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
         super(LovaszHingeLoss, self).__init__()
 
     def forward(self, inputs, targets):
-        inputs = F.sigmoid(inputs)    
-        Lovasz = lovasz_hinge(inputs, targets, per_image=False)                       
+        # inputs = F.sigmoid(inputs)
+        inputs = inputs.squeeze(1)
+        targets = targets.squeeze(1)
+        Lovasz = lovasz_hinge2(inputs, targets, per_image=False)                       
         return Lovasz
     
 class StableBCELoss(torch.nn.modules.Module):
