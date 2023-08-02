@@ -103,4 +103,11 @@ if __name__ == '__main__':
 
         if args.viz:
             logging.info(f'Visualizing results for image {filename}, close to continue...')
-            plot_img_and_mask(img, mask)
+
+            true_mask_filename = filename.replace('train', 'train_masks')
+            print(true_mask_filename)
+            if os.path.exists(true_mask_filename):
+                true_mask = load_image(true_mask_filename, True)
+                plot_img_and_mask(img, mask, true_mask)
+            else:    
+                plot_img_and_mask(img, mask)

@@ -19,7 +19,7 @@ import wandb
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import HubmapDataset
-from utils.metrics import DiceLoss, DiceBCELoss, IoULoss, LovaszHingeLoss
+from utils.metrics import DiceLoss, DiceBCELoss, IoULoss, LovaszHingeLoss, LovaszHingeLossBCE
 
 import matplotlib.pyplot as plt
 
@@ -27,13 +27,10 @@ dir_img = Path('./data/train/')
 dir_mask = Path('./data/train_masks/')
 dir_checkpoint = Path('./checkpoints/')
 
-def save_model(model, wandb, epoch):
+def save_model(model, wandb, epoch, artifact=False):
     Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
     filename = f'{dir_checkpoint}/model{wandb.run.name}_epoch{epoch}.pth'
     torch.save(model.state_dict(), filename)
-
-    artifact = wandb.Artifact(f'epoch{epoch}', type='model')
-    artifact.add_file(filename)
     logging.info(f'Checkpoint {epoch} saved!')
 
 def train_model(
@@ -51,7 +48,7 @@ def train_model(
         gradient_clipping: float = 1.0,
         ignore: float = 0.0,
         es: bool = True,
-        es_patience: int = 5,
+        es_patience: int = 10,
         IoUThreshold=0.6,
         do_transform: bool = True
 ):
@@ -111,6 +108,7 @@ def train_model(
     # 5. Begin training
     global_step = 0
     best_iou = None
+    best_epoch = 0
     es_counter = 0
     for epoch in range(1, epochs + 1):
         epoch_loss = 0
@@ -157,10 +155,11 @@ def train_model(
         scheduler.step(eval['IoU'])
 
         # early stopping
-        if best_iou is None or eval['IoU'] > best_iou or epoch == epochs:
+        if best_iou is None or eval['IoU'] > best_iou:
             save_model(model, wandb, epoch)
-
+            
             es_counter = 0
+            best_epoch = epoch
             best_iou = eval['IoU']
         else:
             es_counter += 1
@@ -177,7 +176,7 @@ def train_model(
             if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
                 histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-        logging.info(f'mAP: {eval["mAP"]}\n\nIoU: {eval["IoU"]}')
+        logging.info(f'IoU: {eval["IoU"]}')
         experiment.log({
             'learning rate': optimizer.param_groups[0]['lr'],
             'mAP':eval['mAP'],
@@ -189,6 +188,11 @@ def train_model(
             'epoch loss': epoch_loss / len(train_loader),
             **histograms
         })
+    
+    best_filename = f'{dir_checkpoint}/model{wandb.run.name}_epoch{best_epoch}.pth'
+    artifact = wandb.Artifact(f'best-model', type='model')
+    artifact.add_file(best_filename)
+    experiment.log_artifact(artifact)
 
 
 def get_args():

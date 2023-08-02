@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from torchmetrics.detection import MeanAveragePrecision
-from utils.metrics import FScore, IoULoss, PixelAccuracy
+from utils.metrics import FScore, IoULoss, PixelAccuracy, AveragePrecision
 
 @torch.inference_mode()
 def evaluate(model, dataloader, device, IoUThreshold=0.6):
@@ -30,7 +30,7 @@ def evaluate(model, dataloader, device, IoUThreshold=0.6):
 
         out['PixelAccuracy'] += PixelAccuracy_metric(y_pred, y_true).item()
         out['FScore']        += FScore_metric(y_pred, y_true).item()
-        out['IoU']           += 1 - IoU_metric(y_pred, y_true).item()
+        out['IoU']           += 1 - IoU_metric(y_pred, y_true, smooth=1e-7).item()
 
         y_pred = torch.sigmoid(y_pred) > 0.5
         y_true = y_true > 0

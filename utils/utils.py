@@ -30,7 +30,7 @@ def encode_binary_mask(mask: np.ndarray) -> t.Text:
     """Converts a binary mask into OID challenge encoding ascii text."""
 
     # check input mask --
-    if mask.dtype != np.bool:
+    if mask.dtype != bool:
         raise ValueError(
             "encode_binary_mask expects a binary mask, received dtype == %s" %
             mask.dtype)

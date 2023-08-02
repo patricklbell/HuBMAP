@@ -38,9 +38,30 @@ class PixelAccuracy(nn.Module):
         targets = targets.view(-1)
         
         intersection = (inputs * targets).sum()
-        total = targets.sum()
+        total = targets.sum() + 1e-7
         
         return intersection / total
+    
+class AveragePrecision(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(AveragePrecision, self).__init__()
+
+    def forward(self, inputs, targets):
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = (F.sigmoid(inputs) > 0.5).int()
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+
+        tp = (inputs * targets).sum()
+        fp = (inputs * (1-targets)).sum()
+        
+        if not torch.is_nonzero(fp) and not torch.is_nonzero(tp):
+            return tp
+        
+        return tp / (tp + fp)
 
 # https://arxiv.org/pdf/1602.06541.pdf
 # F-Metric
@@ -61,6 +82,9 @@ class FScore(nn.Module):
         tp = (inputs * targets).sum()
         fp = (inputs * (1-targets)).sum()
         fn = ((1-inputs) * targets).sum()
+
+        if not torch.is_nonzero(tp):
+            return tp
         
         return (1+beta)**2 * (tp / (tp*(1+beta)**2 + fn*beta**2 + fp)) 
 
@@ -195,6 +219,21 @@ class LovaszHingeLoss(nn.Module):
         Lovasz = lovasz_hinge2(inputs, targets, per_image=False)                       
         return Lovasz
     
+class LovaszHingeLossBCE(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(LovaszHingeLossBCE, self).__init__()
+
+    def forward(self, inputs, targets):
+        inputs = inputs.squeeze(1)
+        targets = targets.squeeze(1)
+        Lovasz = lovasz_hinge2(inputs, targets, per_image=False)                       
+
+        BCE = F.binary_cross_entropy_with_logits(inputs, targets, reduction='mean')
+        Lovasz_BCE = BCE + Lovasz
+        
+        return Lovasz_BCE
+    
+
 class StableBCELoss(torch.nn.modules.Module):
     def __init__(self):
          super(StableBCELoss, self).__init__()
