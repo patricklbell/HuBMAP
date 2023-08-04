@@ -68,19 +68,19 @@ STD = (0.14574793035294117, 0.1963170202745098, 0.12342092792156863)
 
 # Based on https://github.com/tikutikutiku/kaggle-hubmap/blob/main/src/05_train_with_pseudo_labels/transforms.py
 TRAIN_TRANSFORM = Compose([
-    # Basic
-    RandomRotate90(p=1),
-    HorizontalFlip(p=0.5),
+    # # Basic
+    # RandomRotate90(p=1),
+    # HorizontalFlip(p=0.5),
     
-    # Morphology
-    GaussNoise(var_limit=(0,50.0), mean=0, p=0.5),
-    GaussianBlur(blur_limit=(3,7), p=0.5),
+    # # Morphology
+    # GaussNoise(var_limit=(0,50.0), mean=0, p=0.5),
+    # GaussianBlur(blur_limit=(3,7), p=0.5),
     
-    # Color
-    RandomBrightnessContrast(brightness_limit=0.35, contrast_limit=0.5, 
-                                brightness_by_max=True,p=0.5),
-    HueSaturationValue(hue_shift_limit=25, sat_shift_limit=30, 
-                        val_shift_limit=0, p=0.5),
+    # # Color
+    # RandomBrightnessContrast(brightness_limit=0.35, contrast_limit=0.5, 
+    #                             brightness_by_max=True,p=0.5),
+    # HueSaturationValue(hue_shift_limit=25, sat_shift_limit=30, 
+    #                     val_shift_limit=0, p=0.5),
     
     
     Normalize(mean=MEAN, std=STD),

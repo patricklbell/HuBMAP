@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Variable
 
 class DiceLoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
@@ -22,77 +23,11 @@ class DiceLoss(nn.Module):
         
         return 1 - dice
 
-# https://arxiv.org/pdf/1602.06541.pdf
-# Mean Pixel Accuracy for Binary Classification
-class PixelAccuracy(nn.Module):
+class ComboLoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
-        super(PixelAccuracy, self).__init__()
+        super(ComboLoss, self).__init__()
 
-    def forward(self, inputs, targets):
-        
-        #comment out if your model contains a sigmoid or equivalent activation layer
-        inputs = F.sigmoid(inputs)       
-        
-        #flatten label and prediction tensors
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-        
-        intersection = (inputs * targets).sum()
-        total = targets.sum() + 1e-7
-        
-        return intersection / total
-    
-class AveragePrecision(nn.Module):
-    def __init__(self, weight=None, size_average=True):
-        super(AveragePrecision, self).__init__()
-
-    def forward(self, inputs, targets):
-        
-        #comment out if your model contains a sigmoid or equivalent activation layer
-        inputs = (F.sigmoid(inputs) > 0.5).int()
-        
-        #flatten label and prediction tensors
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        tp = (inputs * targets).sum()
-        fp = (inputs * (1-targets)).sum()
-        
-        if not torch.is_nonzero(fp) and not torch.is_nonzero(tp):
-            return tp
-        
-        return tp / (tp + fp)
-
-# https://arxiv.org/pdf/1602.06541.pdf
-# F-Metric
-FScore_BETA = 1.
-class FScore(nn.Module):
-    def __init__(self, weight=None, size_average=True):
-        super(FScore, self).__init__()
-
-    def forward(self, inputs, targets, beta=FScore_BETA):
-        
-        #comment out if your model contains a sigmoid or equivalent activation layer
-        inputs = (F.sigmoid(inputs) > 0.5).int()
-        
-        #flatten label and prediction tensors
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        tp = (inputs * targets).sum()
-        fp = (inputs * (1-targets)).sum()
-        fn = ((1-inputs) * targets).sum()
-
-        if not torch.is_nonzero(tp):
-            return tp
-        
-        return (1+beta)**2 * (tp / (tp*(1+beta)**2 + fn*beta**2 + fp)) 
-
-class DiceBCELoss(nn.Module):
-    def __init__(self, weight=None, size_average=True):
-        super(DiceBCELoss, self).__init__()
-
-    def forward(self, inputs, targets, smooth=1):
+    def forward(self, inputs, targets, smooth=1, alpha=0.5):
         
         #comment out if your model contains a sigmoid or equivalent activation layer
         inputs = F.sigmoid(inputs)       
@@ -104,7 +39,7 @@ class DiceBCELoss(nn.Module):
         intersection = (inputs * targets).sum()                            
         dice_loss = 1 - (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)  
         BCE = F.binary_cross_entropy(inputs, targets, reduction='mean')
-        Dice_BCE = BCE + dice_loss
+        Dice_BCE = alpha * BCE + (1 - alpha) * dice_loss
         
         return Dice_BCE
 
@@ -131,7 +66,7 @@ class IoULoss(nn.Module):
                 
         return 1 - IoU
     
-FocalLoss_ALPHA = 0.8
+FocalLoss_ALPHA = 0.95
 FocalLoss_GAMMA = 2
 
 class FocalLoss(nn.Module):
@@ -205,8 +140,79 @@ class FocalTverskyLoss(nn.Module):
         FocalTversky = (1 - Tversky)**gamma
                        
         return FocalTversky
+    
+class StableBCELoss(torch.nn.modules.Module):
+    def __init__(self):
+         super(StableBCELoss, self).__init__()
+    def forward(self, input, target):
+         neg_abs = - input.abs()
+         loss = input.clamp(min=0) - input * target + (1 + neg_abs.exp()).log()
+         return loss.mean()
+    
+# Lovasz Helpers
+def lovasz_hinge2(logits, labels, ignore=None):
+    """
+    Binary Lovasz hinge loss
+      logits: [B, H, W] Variable, logits at each pixel (between -\infty and +\infty)
+      labels: [B, H, W] Tensor, binary ground truth masks (0 or 1)
+      ignore: void class id
+    """
+    loss = torch.mean(lovasz_hinge_flat2(*flatten_binary_scores(log.unsqueeze(0), lab.unsqueeze(0), ignore))
+                      for log, lab in zip(logits, labels))
 
-from utils.lovasz import lovasz_hinge2
+    return loss
+
+
+def lovasz_grad(gt_sorted):
+    """
+    Computes gradient of the Lovasz extension w.r.t sorted errors
+    See Alg. 1 in paper
+    """
+    p = len(gt_sorted)
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1 - gt_sorted).float().cumsum(0)
+    jaccard = 1. - intersection / union
+    if p > 1: # cover 1-pixel case
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+    return jaccard
+
+def lovasz_hinge_flat2(logits, labels):
+    """
+    Binary Lovasz hinge loss
+      logits: [P] Variable, logits at each prediction (between -\infty and +\infty)
+      labels: [P] Tensor, binary ground truth labels (0 or 1)
+      ignore: label to ignore
+    """
+    if len(labels) == 0:
+        # only void pixels, the gradients should be 0
+        return logits.sum() * 0.
+    signs = 2. * labels.float() - 1.
+    errors = (1. - logits * Variable(signs))
+    errors_sorted, perm = torch.sort(errors, dim=0, descending=True)
+    perm = perm.data
+    gt_sorted = labels[perm]
+    grad = lovasz_grad(gt_sorted)
+    weight = 1
+    if labels.sum() == 0:
+        weight = 0
+    loss = torch.dot(F.relu(errors_sorted), Variable(grad)) * weight
+    return loss
+
+
+def flatten_binary_scores(scores, labels, ignore=None):
+    """
+    Flattens predictions in the batch (binary case)
+    Remove labels equal to 'ignore'
+    """
+    scores = scores.view(-1)
+    labels = labels.view(-1)
+    if ignore is None:
+        return scores, labels
+    valid = (labels != ignore)
+    vscores = scores[valid]
+    vlabels = labels[valid]
+    return vscores, vlabels
 
 class LovaszHingeLoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
@@ -218,26 +224,96 @@ class LovaszHingeLoss(nn.Module):
         targets = targets.squeeze(1)
         Lovasz = lovasz_hinge2(inputs, targets, per_image=False)                       
         return Lovasz
+
+######################
+# Evaluation Metrics #
+######################
     
-class LovaszHingeLossBCE(nn.Module):
+# https://arxiv.org/pdf/1602.06541.pdf
+# Mean Pixel Accuracy for Binary Classification
+class PixelAccuracy(nn.Module):
     def __init__(self, weight=None, size_average=True):
-        super(LovaszHingeLossBCE, self).__init__()
+        super(PixelAccuracy, self).__init__()
 
     def forward(self, inputs, targets):
-        inputs = inputs.squeeze(1)
-        targets = targets.squeeze(1)
-        Lovasz = lovasz_hinge2(inputs, targets, per_image=False)                       
-
-        BCE = F.binary_cross_entropy_with_logits(inputs, targets, reduction='mean')
-        Lovasz_BCE = BCE + Lovasz
         
-        return Lovasz_BCE
-    
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = (F.sigmoid(inputs) > 0.5).int()       
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
+        
+        intersection = (inputs * targets).sum()
+        total = targets.size()
+        
+        return intersection / total
 
-class StableBCELoss(torch.nn.modules.Module):
-    def __init__(self):
-         super(StableBCELoss, self).__init__()
-    def forward(self, input, target):
-         neg_abs = - input.abs()
-         loss = input.clamp(min=0) - input * target + (1 + neg_abs.exp()).log()
-         return loss.mean()
+# https://arxiv.org/pdf/1602.06541.pdf
+# F-Metric
+FScore_BETA = 1.
+class FScore(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(FScore, self).__init__()
+
+    def forward(self, inputs, targets, beta=FScore_BETA):
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = (F.sigmoid(inputs) > 0.5).int()
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1) > 0
+        targets = targets.view(-1) > 0
+
+        tp = (inputs & targets).sum()
+        fp = (inputs & (~targets)).sum()
+        fn = ((~inputs) & targets).sum()
+
+        if not torch.is_nonzero(tp):
+            return tp
+        
+        return (1+beta**2) * (tp / (tp*(1+beta**2) + fn + fp)) 
+
+# https://arxiv.org/abs/2202.05273
+class SensitivityScore(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(SensitivityScore, self).__init__()
+
+    def forward(self, inputs, targets):
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = (F.sigmoid(inputs) > 0.5).int()
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1) > 0
+        targets = targets.view(-1) > 0
+
+        tp = (inputs & targets).sum()
+        fn = ((~inputs) & targets).sum()
+
+        if not torch.is_nonzero(tp):
+            return tp
+        
+        return tp / (tp + fn) 
+
+# https://arxiv.org/abs/2202.05273
+class SpecificityScore(nn.Module):
+    def __init__(self, weight=None, size_average=True):
+        super(SpecificityScore, self).__init__()
+
+    def forward(self, inputs, targets):
+        
+        #comment out if your model contains a sigmoid or equivalent activation layer
+        inputs = (F.sigmoid(inputs) > 0.5).int()
+        
+        #flatten label and prediction tensors
+        inputs = inputs.view(-1) > 0
+        targets = targets.view(-1) > 0
+        
+        tn = ((~inputs) & (~targets)).sum()
+        fp = (inputs & (~targets)).sum()
+
+        if not torch.is_nonzero(tn):
+            return tn
+        
+        return tn / (tn + fp) 

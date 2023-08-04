@@ -19,17 +19,17 @@ import wandb
 from evaluate import evaluate
 from unet import UNet
 from utils.data_loading import HubmapDataset
-from utils.metrics import DiceLoss, DiceBCELoss, IoULoss, LovaszHingeLoss, LovaszHingeLossBCE
+from utils.metrics import DiceLoss, ComboLoss, IoULoss, LovaszHingeLoss
 
 import matplotlib.pyplot as plt
 
 dir_img = Path('./data/train/')
 dir_mask = Path('./data/train_masks/')
-dir_checkpoint = Path('./checkpoints/')
+dir_models = Path('./checkpoints/')
 
-def save_model(model, wandb, epoch, artifact=False):
-    Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-    filename = f'{dir_checkpoint}/model{wandb.run.name}_epoch{epoch}.pth'
+def save_model(model, wandb, epoch):
+    Path(dir_models).mkdir(parents=True, exist_ok=True)
+    filename = f'{dir_models}/model{wandb.run.name}_epoch{epoch}.pth'
     torch.save(model.state_dict(), filename)
     logging.info(f'Checkpoint {epoch} saved!')
 
@@ -47,13 +47,15 @@ def train_model(
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
         ignore: float = 0.0,
-        es: bool = True,
+        es: bool = False,
         es_patience: int = 10,
         IoUThreshold=0.6,
-        do_transform: bool = True
+        do_transform: bool = True,
+        do_wandb: bool = True,
+        do_save_model: bool = True
 ):
     # 1. Create dataset
-    dataset = HubmapDataset(dir_img, dir_mask, img_scale, do_transform=do_transform)
+    dataset = HubmapDataset(dir_img, dir_mask, scale=img_scale, do_transform=True)
 
     # 2. Ignore some data to speed up testing
     if ignore > 0.0:
@@ -71,21 +73,22 @@ def train_model(
     val_loader = DataLoader(val_set, shuffle=False, drop_last=True, **loader_args)
 
     # (Initialize logging)
-    experiment = wandb.init(project='HuBMAP', resume='allow', anonymous='must')
-    experiment.config.update(dict(
-        architecture=architecture,
-        epochs=epochs, 
-        batch_size=batch_size, 
-        learning_rate=learning_rate,
-        val_percent=val_percent, 
-        save_checkpoint=save_checkpoint, 
-        img_scale=img_scale, 
-        es=es,
-        es_patience=es_patience,
-        IoUThreshold=IoUThreshold,
-        do_transform=do_transform,
-        loss='DiceBCELoss',
-    ))
+    if do_wandb:
+        experiment = wandb.init(project='HuBMAP')
+        experiment.config.update(dict(
+            architecture=architecture,
+            epochs=epochs, 
+            batch_size=batch_size, 
+            learning_rate=learning_rate,
+            val_percent=val_percent, 
+            save_checkpoint=save_checkpoint, 
+            img_scale=img_scale, 
+            es=es,
+            es_patience=es_patience,
+            IoUThreshold=IoUThreshold,
+            do_transform=do_transform,
+            loss='BCELoss',
+        ))
 
     logging.info(f'''Starting training:
         Architecture:    {architecture}
@@ -102,12 +105,12 @@ def train_model(
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler
     optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=weight_decay, momentum=momentum, foreach=True)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', factor=0.8, patience=5, min_lr=1e-5)
-    criterion = DiceBCELoss().to(device)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', factor=0.8, patience=5, min_lr=1e-5)
+    criterion = nn.BCEWithLogitsLoss().to(device)
 
     # 5. Begin training
     global_step = 0
-    best_iou = None
+    best_dsc = None
     best_epoch = 0
     es_counter = 0
     for epoch in range(1, epochs + 1):
@@ -140,11 +143,12 @@ def train_model(
                 global_step += 1
                 epoch_loss += loss.item()
 
-                experiment.log({
-                    'train loss': loss.item(),
-                    'step': global_step,
-                    'epoch': epoch
-                })
+                if do_wandb:
+                    experiment.log({
+                        'train loss': loss.item(),
+                        'step': global_step,
+                        'epoch': epoch
+                    })
                 pbar.update(x.shape[0])
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
@@ -152,47 +156,57 @@ def train_model(
         model.eval()
         eval = evaluate(model, val_loader, device, IoUThreshold=IoUThreshold)
 
-        scheduler.step(eval['IoU'])
+        # scheduler.step(eval['DSC'])
 
         # early stopping
-        if best_iou is None or eval['IoU'] > best_iou:
-            save_model(model, wandb, epoch)
+        if best_dsc is None or eval['DSC'] > best_dsc:
+            if do_save_model:
+                save_model(model, wandb, epoch)
             
             es_counter = 0
             best_epoch = epoch
-            best_iou = eval['IoU']
+            best_iou = eval['DSC']
         else:
             es_counter += 1
             if es and es_counter > es_patience:
                 logging.info(f'Stopping run early because there were {es_counter} unsuccessful runs')
-                save_model(model, wandb, epoch)
+                if save_model:
+                    save_model(model, wandb, epoch)
                 break
+        
+        logging.info(f'''
+        Validation DSC: {eval["DSC"]}
+        Validation IoU: {eval["IoU"]}
+        Validation Sensitivity: {eval["Sensitivity"]}
+        Validation Specificity: {eval["Specificity"]}
+        ''')
+        if do_wandb:
+            histograms = {}
+            for tag, value in model.named_parameters():
+                tag = tag.replace('/', '.')
+                if not (torch.isinf(value) | torch.isnan(value)).any():
+                    histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
+                if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
+                    histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
-        histograms = {}
-        for tag, value in model.named_parameters():
-            tag = tag.replace('/', '.')
-            if not (torch.isinf(value) | torch.isnan(value)).any():
-                histograms['Weights/' + tag] = wandb.Histogram(value.data.cpu())
-            if not (torch.isinf(value.grad) | torch.isnan(value.grad)).any():
-                histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
-
-        logging.info(f'IoU: {eval["IoU"]}')
-        experiment.log({
-            'learning rate': optimizer.param_groups[0]['lr'],
-            'mAP':eval['mAP'],
-            'IoU':eval['IoU'],
-            'PixelAccuracy':eval['PixelAccuracy'],
-            'FScore':eval['FScore'],
-            'step': global_step,
-            'epoch': epoch,
-            'epoch loss': epoch_loss / len(train_loader),
-            **histograms
-        })
+            experiment.log({
+                'learning rate': optimizer.param_groups[0]['lr'],
+                'DSC':eval['DSC'],
+                'IoU':eval['IoU'],
+                'Sensitivity':eval['Sensitivity'],
+                'Specificity':eval['Specificity'],
+                'step': global_step,
+                'epoch': epoch,
+                'epoch loss': epoch_loss / len(train_loader),
+                **histograms
+            })
     
-    best_filename = f'{dir_checkpoint}/model{wandb.run.name}_epoch{best_epoch}.pth'
-    artifact = wandb.Artifact(f'best-model', type='model')
-    artifact.add_file(best_filename)
-    experiment.log_artifact(artifact)
+    if do_wandb and do_save_model:
+        best_filename = f'{dir_models}/model{wandb.run.name}_epoch{best_epoch}.pth'
+        artifact = wandb.Artifact(f'best-model', type='model')
+        artifact.add_file(best_filename)
+        experiment.log_artifact(artifact)
+        experiment.finish()
 
 
 def get_args():
